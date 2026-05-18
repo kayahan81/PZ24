@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s      # Скрейпим каждые 5 секунд (для учебы)
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'tasks'
+    static_configs:
+      - targets: ['host.docker.internal:8082']   # для доступа к tasks на хосте
+        # Если tasks тоже в docker, замените на tasks:8082
+    metrics_path: /metrics

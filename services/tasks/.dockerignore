@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Логи
+*.log
+
+# Временные файлы
+tmp/
+temp/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+.vs/
+
+# Документация
+docs/
+README.md
+
+# Библиотеки и зависимости (скачаются в контейнере)
+vendor/
+
+# Тесты
+*_test.go
+testdata/
+
+# Бинарники (соберутся заново)
+bin/
+dist/
+*.exe
