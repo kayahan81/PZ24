@@ -21,6 +21,10 @@ C:.
 │   README.md
 │   testdata.bat
 │
+├───.github
+│   └───workflows
+│           ci.yml
+│
 ├───.vs
 │   │   ProjectSettings.json
 │   │   slnx.sqlite
@@ -65,6 +69,7 @@ C:.
 │   │   │   │       auth.go
 │   │   │   │
 │   │   │   ├───http
+│   │   │   ├───middleware
 │   │   │   └───service
 │   │   └───pkg
 │   │       └───authpb
@@ -72,6 +77,7 @@ C:.
 │   │               auth_grpc.pb.go
 │   │
 │   └───tasks
+│       │   .dockerignore
 │       │   Dockerfile
 │       │
 │       ├───cmd
@@ -88,11 +94,15 @@ C:.
 │           │
 │           ├───handler
 │           │       tasks.go
+│           │       tasks_test.go
 │           │
 │           ├───http
 │           ├───middleware
 │           │       auth.go
+│           │       auth_cookie.go
+│           │       csrf.go
 │           │       metric.go
+│           │       security_headers.go
 │           │
 │           ├───migration
 │           │       001_create_tasks.sql
@@ -108,6 +118,9 @@ C:.
 │                   memory.go
 │
 └───shared
+    ├───csrf
+    │       generator.go
+    │
     ├───httpx
     │       client.go
     │
@@ -140,11 +153,11 @@ Go: версия 1.25.1
 # Команды запуска/сборки
 ## 1) Клонировать данный репозиторий в удобную для вас папку:
 ```Powershell
-git clone https://github.com/kayahan81/pz21
+git clone https://github.com/kayahan81/pz24
 ```
 ## 2) Перейти в папку pz19:
 ```Powershell
-cd pz21
+cd pz24
 ```
 ## 3) Загрузка зависимостей:
 ```Powershell
@@ -166,92 +179,158 @@ docker-compose up -d
 ```
 
 # Проверка работоспособности
-В качестве СУБД была выбрана PostgreSQL
-Сервис обработки задач разворачивается на docker
-## Создаём и просматриваем задачи
-<img width="754" height="754" alt="image" src="https://github.com/user-attachments/assets/956aca19-6ce6-4e1c-a206-ba979a6dc794" />
+## Деплой
+<img width="1196" height="290" alt="image" src="https://github.com/user-attachments/assets/41c24587-8e16-4cc2-a105-2ccf7515b69f" />
+<img width="1204" height="213" alt="image" src="https://github.com/user-attachments/assets/df673ec6-74fc-4f73-a9be-f94b848816c1" />
 
-## Нормальный поиск по названию
-<img width="704" height="639" alt="image" src="https://github.com/user-attachments/assets/35636f51-dd20-4462-b33d-dece2f8917e3" />
+## Публикация образа по тегу
+<img width="1161" height="105" alt="image" src="https://github.com/user-attachments/assets/9fe1a3ad-0464-4719-af81-3807db3aa322" />
+<img width="376" height="139" alt="image" src="https://github.com/user-attachments/assets/c8db422b-4346-4bdb-b076-4a3fdd2444b1" />
 
-## Демонстрация уязвимости на учебном стенде
-Видно, что по запросу выдаются все данные. Это плохо
-<img width="714" height="912" alt="image" src="https://github.com/user-attachments/assets/5e9406b2-e03e-4133-85f9-2831eac5de50" />  
 
-Если же попробовать тот же запрос в нормальном поиске - результат будет null
-<img width="703" height="537" alt="image" src="https://github.com/user-attachments/assets/1e720a71-3a68-41a2-a6ca-dddc0650121b" />
 
 # Отчёт
-- Был выбран NGINX как TLS-терминатор, потому что отделяет шифрование от логики приложения
-- Команды генерации сертификата (сертификат был добавлен в gitignore):
-```Powershell
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout key.pem \
-  -out cert.pem \
-  -days 365 \
-  -subj "/CN=localhost"
+1.	Файл pipeline (ci.yml или .gitlab-ci.yml)
+```yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+env:
+  GO_VERSION: '1.25'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/tasks
+
+jobs:
+  # ============================================
+  # JOB 1: Тесты и сборка
+  # ============================================
+  test-and-build:
+    name: Test & Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      
+      - name: Download dependencies
+        run: go mod download
+      
+      - name: Run tests
+        run: go test -v ./...
+      
+      - name: Build Auth
+        run: go build -o /dev/null ./services/auth/cmd/auth
+      
+      - name: Build Tasks
+        run: go build -o /dev/null ./services/tasks/cmd/tasks
+
+  # ============================================
+  # JOB 2: Сборка Docker образа
+  # ============================================
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test-and-build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/tasks/Dockerfile
+          load: true
+          tags: techip-tasks:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Verify image
+        run: docker images | grep techip-tasks
+
+  # ============================================
+  # JOB 3: Публикация в Registry (при теге)
+  # ============================================
+  docker-push:
+    name: Push to GHCR
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    permissions:
+      contents: read
+      packages: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,prefix={{date:YYYYMMDDHHmmss}}-
+            type=raw,value=latest
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/tasks/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 ```
-- Конфиг NGINX:
-```
-events {}
-
-http {
-    log_format main '$remote_addr - $remote_user [$time_local] '
-                    '"$request" $status $body_bytes_sent '
-                    '"$http_x_request_id"';
-
-    access_log /var/log/nginx/access.log main;
-
-    resolver 127.0.0.11 valid=30s;
-
-    server {
-        listen 8443 ssl;
-        server_name localhost;
-
-        ssl_certificate     /etc/nginx/tls/cert.pem;
-        ssl_certificate_key /etc/nginx/tls/key.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
-
-        location / {
-            set $upstream tasks:8082;
-            proxy_pass http://$upstream;
-            
-            proxy_set_header Host $host;
-            proxy_set_header X-Forwarded-Proto https;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Request-ID $http_x_request_id;
-            proxy_set_header Authorization $http_authorization;
-        }
-    }
-}
-```
-- Описание БД:
-Создаются база данных tasks_db и таблица tasks с полями id, title, description, due_date, done, created_at
-- Демонстрация SQLi
-fmt.Sprintf("SELECT id, title, description, due_date, done, created_at FROM tasks WHERE title LIKE '%%%s%%'", keyword)
-
-Исправленный код (параметризованный запрос с $1)
-query := `SELECT id, title, description, due_date, done, created_at FROM tasks WHERE title LIKE $1`
-rows, err := r.db.Query(query, "%"+keyword+"%")
-
-keyword передаётся как параметр, база данных не воспринимает его как исполняемый SQL код.
-
-Команда для проверки уязвимости в учебном стенде
-<img width="714" height="912" alt="image" src="https://github.com/user-attachments/assets/5e9406b2-e03e-4133-85f9-2831eac5de50" />  
+2.	Описание шагов pipeline (что и в каком порядке делается)
+test-and-build — проверка тестов и компиляции
+docker-build — сборка Docker образа
+3.	Скрин/лог успешного прогона: тесты + build + docker build
+<img width="1351" height="448" alt="image" src="https://github.com/user-attachments/assets/9f4fc85e-3601-4f5e-8f57-8fe3ea225603" />
+4.	Если есть push в registry — указать, куда публикуется образ и как формируется тег
+<img width="1173" height="231" alt="image" src="https://github.com/user-attachments/assets/2020bd51-e885-4055-9451-15857452b4b8" />
 
 
 
 # Ответы на вопросы
-1.	Какие свойства даёт TLS соединению?
-TLS обеспечивает шифрование данных между клиентом и сервером, защиту от подслушивания и гарантию, что клиент общается с подлинным сервером, а не с злоумышленником.
-2.	Почему самоподписанный сертификат не подходит для реального продакшна?
-Самоподписанный сертификат не подходит для продакшна, потому что он не подтверждён доверенным центром сертификации, и браузеры/клиенты будут показывать предупреждение о небезопасном соединении, а также отсутствует возможность отзыва сертификата при компрометации ключа.
-3.	В чём отличие TLS-терминации на NGINX от TLS в приложении?
-При TLS-терминации на NGINX шифрование снимается на уровне прокси и дальше внутри сети трафик идёт по HTTP, что позволяет централизованно управлять сертификатами; при TLS в приложении каждый сервис сам отвечает за шифрование, что усложняет управление сертификатами и увеличивает нагрузку.
-4.	Как возникает SQL-инъекция?
-SQL-инъекция возникает, когда приложение склеивает строку запроса с пользовательским вводом, позволяя злоумышленнику подменить условие или выполнить произвольный SQL-код, например введя ' OR '1'='1.
-5.	Почему параметризованный запрос защищает от SQLi?
-Параметризованный запрос защищает от SQLi, потому что пользовательский ввод передаётся как параметр, а не как часть SQL-кода, поэтому база данных воспринимает его как данные, а не как исполняемые команды.
-6.	Почему детали ошибок БД нельзя показывать клиенту?
-Детали ошибок БД нельзя показывать клиенту, потому что они могут раскрыть структуру таблиц, имена полей или другую внутреннюю информацию, что поможет злоумышленнику подготовить более точную атаку, а в логах нужно фиксировать подробности для диагностики.
+1.	Чем CI отличается от CD?
+CI — непрерывная интеграция (тесты, сборка), CD — непрерывная доставка (деплой)
+2.	Почему go test должен запускаться в pipeline?
+go test должен запускаться в pipeline, чтобы поймать ошибки до того, как код попадёт в основную ветку
+3.	Что такое секреты CI и почему их нельзя хранить в репозитории?
+Секреты CI — это зашифрованные переменные, их нельзя хранить в репозитории, чтобы злоумышленник не украл токены/ключи
+4.	Почему важно версионировать docker-образы?
+Версионировать образы важно, чтобы можно было откатиться к предыдущей версии и понять, что именно развёрнуто на сервере
+5.	Какие риски у автоматического деплоя без ручного контроля?
+Можно случайно задеплоить сломанную версию, если тесты пропустили баг; нужен ручной контроль для критичных систем
